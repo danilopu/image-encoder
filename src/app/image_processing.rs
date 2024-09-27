@@ -61,10 +61,20 @@ pub fn convert_images(
     input_files.par_iter().enumerate().for_each(|(index, input_path)| {
         *currently_processing.lock() = Some(index);
         logger.log(format!("Processing file: {}", input_path.display()));
+        
+        // Update status to "Processing"
+        {
+            let mut image_details = image_details.lock();
+            if let Some(detail) = image_details.get_mut(index) {
+                detail.status = "Processing...".to_string();
+            }
+        }
+        sender.send(ConversionUpdate::StatusUpdate(index, "Processing...".to_string(), None)).unwrap();
+
         let (img_result, load_duration) = measure_time(|| load_image(input_path));
         logger.log(format!("Loading image {} took {:?}", input_path.display(), load_duration));
 
-        if let Ok(img) = img_result {
+        let (compressed_size, compression_rate) = if let Ok(img) = img_result {
             logger.log("Image loaded successfully".to_string());
 
             let img = if resize_enabled {
@@ -98,7 +108,10 @@ pub fn convert_images(
                 logger.log(format!("Saving WebP file took {:?}", save_duration));
 
                 if let Err(e) = save_result {
-                    logger.log(format!("Failed to save {}: {}", output_path.display(), e));
+                    let error_msg = format!("Failed to save: {}", e);
+                    logger.log(error_msg.clone());
+                    sender.send(ConversionUpdate::StatusUpdate(index, "Conversion failed".to_string(), Some(error_msg))).unwrap();
+                    (None, None)
                 } else {
                     logger.log("WebP file saved successfully".to_string());
 
@@ -109,22 +122,26 @@ pub fn convert_images(
                     compressed_sizes.lock().push(compressed_size);
 
                     let compression_rate = 1.0 - (compressed_size as f32 / original_size as f32);
-                    
-                    let mut image_details = image_details.lock();
-                    if let Some(detail) = image_details.get_mut(index) {
-                        detail.compressed_size = Some(compressed_size);
-                        detail.compression_rate = Some(compression_rate);
-                    }
-                    drop(image_details);
-
-                    sender.send(ConversionUpdate::ImageProcessed(index, compressed_size, compression_rate)).unwrap();
+                    let total_original: f64 = original_sizes.lock().iter().sum::<u64>() as f64 / (1024.0 * 1024.0);
+                    let total_compressed: f64 = compressed_sizes.lock().iter().sum::<u64>() as f64 / (1024.0 * 1024.0);
+                    sender.send(ConversionUpdate::StatusUpdate(index, "Conversion successful".to_string(), None)).unwrap();
+                    sender.send(ConversionUpdate::ResultsUpdate(total_original, total_compressed)).unwrap();
+                    (Some(compressed_size), Some(compression_rate))
                 }
-            } else if let Err(e) = webp_result {
-                logger.log(format!("Failed to encode {}: {}", input_path.display(), e));
+            } else {
+                let error_msg = format!("Failed to encode: {}", webp_result.unwrap_err());
+                logger.log(error_msg.clone());
+                sender.send(ConversionUpdate::StatusUpdate(index, "Conversion failed".to_string(), Some(error_msg))).unwrap();
+                (None, None)
             }
         } else {
-            logger.log(format!("Failed to load {}: {}", input_path.display(), img_result.unwrap_err()));
-        }
+            let error_msg = format!("Failed to load: {}", img_result.unwrap_err());
+            logger.log(format!("Error: {}", error_msg)); // This ensures the word "error" is present for red coloring in the log
+            sender.send(ConversionUpdate::StatusUpdate(index, "Conversion failed".to_string(), Some(error_msg))).unwrap();
+            (None, None)
+        };
+
+        sender.send(ConversionUpdate::ImageProcessed(index, compressed_size, compression_rate)).unwrap();
 
         let mut progress = progress.lock();
         progress.completed += 1;

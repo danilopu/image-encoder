@@ -41,8 +41,10 @@ pub struct App {
 #[derive(Clone)]
 pub enum ConversionUpdate {
     Progress(usize, usize),  // (completed, total)
-    ImageProcessed(usize, u64, f32),  // (index, compressed_size, compression_rate)
+    ImageProcessed(usize, Option<u64>, Option<f32>),  // (index, compressed_size, compression_rate)
     Completed,
+    StatusUpdate(usize, String, Option<String>),  // (index, status, error_message)
+    ResultsUpdate(f64, f64),  // (total_original, total_compressed)
 }
 
 pub struct ConversionProgress {
@@ -57,6 +59,8 @@ pub struct ImageDetail {
     pub original_size: u64,
     pub compressed_size: Option<u64>,
     pub compression_rate: Option<f32>,
+    pub status: String,
+    pub error_message: Option<String>,
 }
 
 impl Default for App {
@@ -95,6 +99,8 @@ impl Default for App {
 impl EframeApp for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let mut completed = false;
+        let mut needs_redraw = false;
+
         if let Some(receiver) = &self.conversion_receiver {
             while let Ok(update) = receiver.try_recv() {
                 match update {
@@ -102,16 +108,35 @@ impl EframeApp for App {
                         let mut progress = self.conversion_progress.lock();
                         progress.completed = completed;
                         progress.total = total;
+                        drop(progress); // Release the lock as soon as possible
+                        needs_redraw = true;
                     }
                     ConversionUpdate::ImageProcessed(index, compressed_size, compression_rate) => {
                         let mut image_details = self.image_details.lock();
                         if let Some(detail) = image_details.get_mut(index) {
-                            detail.compressed_size = Some(compressed_size);
-                            detail.compression_rate = Some(compression_rate);
+                            detail.compressed_size = compressed_size;
+                            detail.compression_rate = compression_rate;
                         }
+                        drop(image_details); // Release the lock as soon as possible
+                        needs_redraw = true;
+                    }
+                    ConversionUpdate::StatusUpdate(index, status, error_message) => {
+                        let mut image_details = self.image_details.lock();
+                        if let Some(detail) = image_details.get_mut(index) {
+                            detail.status = status;
+                            detail.error_message = error_message;
+                        }
+                        drop(image_details); // Release the lock as soon as possible
+                        needs_redraw = true;
+                    }
+                    ConversionUpdate::ResultsUpdate(total_original, total_compressed) => {
+                        self.original_size = Some(total_original as u64);
+                        self.compressed_size = Some(total_compressed as u64);
+                        needs_redraw = true;
                     }
                     ConversionUpdate::Completed => {
                         completed = true;
+                        needs_redraw = true;
                     }
                 }
             }
@@ -124,7 +149,9 @@ impl EframeApp for App {
         // Render the GUI
         gui::render(self, ctx);
 
-        // Request a repaint to update the UI frequently
-        ctx.request_repaint();
+        // Force a redraw if needed
+        if needs_redraw {
+            ctx.request_repaint();
+        }
     }
 }

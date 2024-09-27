@@ -31,6 +31,8 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
                                 original_size: metadata.len(),
                                 compressed_size: None,
                                 compression_rate: None,
+                                status: "Load successful".to_string(),
+                                error_message: None,
                             }
                         }).collect();
                         *app.image_details.lock() = image_details;
@@ -78,20 +80,24 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
                 ui.group(|ui| {
                     ui.set_width(button_width);
                     ui.label(RichText::new("Results").size(16.0).color(Color32::from_rgb(100, 200, 250)));
-                    let original_sizes = app.original_sizes.lock();
-                    let compressed_sizes = app.compressed_sizes.lock();
 
-                    if !original_sizes.is_empty() && !compressed_sizes.is_empty() {
-                        let total_original: f64 = original_sizes.iter().sum::<u64>() as f64 / (1024.0 * 1024.0);
-                        let total_compressed: f64 = compressed_sizes.iter().sum::<u64>() as f64 / (1024.0 * 1024.0);
-                        let reduction = (1.0 - (total_compressed / total_original)) * 100.0;
-
-                        ui.label(RichText::new(format!("Original: {:.2} MB", total_original)).color(Color32::from_rgb(200, 200, 200)));
-                        ui.label(RichText::new(format!("Compressed: {:.2} MB", total_compressed)).color(Color32::from_rgb(200, 200, 200)));
-                        ui.label(RichText::new(format!("Reduction: {:.2}%", reduction)).color(Color32::from_rgb(100, 250, 100)));
+                    let total_files = app.input_files.len();
+                    let total_original_size: f64 = app.input_files.iter()
+                        .filter_map(|f| std::fs::metadata(f).ok())
+                        .map(|m| m.len() as f64 / (1024.0 * 1024.0))
+                        .sum();
+                    
+                    let total_compressed_size: f64 = app.compressed_sizes.lock().iter().sum::<u64>() as f64 / (1024.0 * 1024.0);
+                    let size_reduction = if total_original_size > 0.0 {
+                        (1.0 - (total_compressed_size / total_original_size)) * 100.0
                     } else {
-                        ui.label("No conversion results yet.");
-                    }
+                        0.0
+                    };
+
+                    ui.label(RichText::new(format!("Files: {}", total_files)).color(Color32::from_rgb(200, 200, 200)));
+                    ui.label(RichText::new(format!("Original Size: {:.2} MB", total_original_size)).color(Color32::from_rgb(200, 200, 200)));
+                    ui.label(RichText::new(format!("Compressed Size: {:.2} MB", total_compressed_size)).color(Color32::from_rgb(200, 200, 200)));
+                    ui.label(RichText::new(format!("Size Reduction: {:.2}%", size_reduction)).color(Color32::from_rgb(200, 200, 200)));
                 });
 
                 ui.add_space(10.0);
@@ -109,8 +115,6 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
             ui.add_space(10.0);
 
             // Selected Images (scrollable table)
-            // Selected Images (scrollable table)
-            // Selected Images (scrollable table)
             ui.vertical(|ui| {
                 ui.group(|ui| {
                     ui.set_min_width(ui.available_width());
@@ -119,44 +123,55 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
                     
                     egui::ScrollArea::vertical().auto_shrink([false; 2]).show(ui, |ui| {
                         egui::Grid::new("image_details_grid")
-                            .num_columns(5)
-                            .striped(true)
-                            .show(ui, |ui| {
-                                ui.label(RichText::new("#").strong());
-                                ui.label(RichText::new("Name").strong());
-                                ui.label(RichText::new("Original Size").strong());
-                                ui.label(RichText::new("Compressed Size").strong());
-                                ui.label(RichText::new("Compression Rate").strong());
-                                ui.end_row();
+                        .num_columns(6)
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("#").strong());
+                            ui.label(RichText::new("Name").strong());
+                            ui.label(RichText::new("Original Size").strong());
+                            ui.label(RichText::new("Compressed Size").strong());
+                            ui.label(RichText::new("Compression Rate").strong());
+                            ui.label(RichText::new("Status").strong());
+                            ui.end_row();
 
-                                let image_details = app.image_details.lock();
-                                for (index, detail) in image_details.iter().enumerate() {
-                                    let text_color = if Some(index) == *app.currently_processing.lock() {
-                                        Color32::YELLOW
-                                    } else {
-                                        Color32::WHITE
-                                    };
+                            let image_details = app.image_details.lock();
+                            for (index, detail) in image_details.iter().enumerate() {
+                                let text_color = if Some(index) == *app.currently_processing.lock() {
+                                    Color32::YELLOW
+                                } else {
+                                    Color32::WHITE
+                                };
 
-                                    ui.label(RichText::new(format!("{}", index + 1)).color(text_color));
-                                    ui.label(RichText::new(&detail.name).color(text_color));
-                                    ui.label(RichText::new(format!("{:.2} MB", detail.original_size as f64 / (1024.0 * 1024.0))).color(text_color));
-                                    
-                                    if let Some(compressed_size) = detail.compressed_size {
-                                        ui.label(RichText::new(format!("{:.2} MB", compressed_size as f64 / (1024.0 * 1024.0))).color(text_color));
-                                    } else {
-                                        ui.label(RichText::new("-").color(text_color));
-                                    }
-
-                                    if let Some(rate) = detail.compression_rate {
-                                        ui.label(RichText::new(format!("{:.2}%", rate * 100.0)).color(text_color));
-                                    } else {
-                                        ui.label(RichText::new("-").color(text_color));
-                                    }
-
-                                    ui.end_row();
+                                ui.label(RichText::new(format!("{}", index + 1)).color(text_color));
+                                ui.label(RichText::new(&detail.name).color(text_color));
+                                ui.label(RichText::new(format!("{:.2} MB", detail.original_size as f64 / (1024.0 * 1024.0))).color(text_color));
+                                
+                                if detail.status == "Conversion failed" {
+                                    ui.label(RichText::new("-").color(Color32::RED));
+                                    ui.label(RichText::new("-").color(Color32::RED));
+                                } else {
+                                    ui.label(RichText::new(match detail.compressed_size {
+                                        Some(size) => format!("{:.2} MB", size as f64 / (1024.0 * 1024.0)),
+                                        None => "-".to_string(),
+                                    }).color(text_color));
+                                    ui.label(RichText::new(match detail.compression_rate {
+                                        Some(rate) => format!("{:.2}%", rate * 100.0),
+                                        None => "-".to_string(),
+                                    }).color(text_color));
                                 }
-                                drop(image_details);
-                            });
+
+                                let status_color = match detail.status.as_str() {
+                                    "Load successful" => Color32::GREEN,
+                                    "Processing..." => Color32::YELLOW,
+                                    "Conversion successful" => Color32::GREEN,
+                                    "Conversion failed" => Color32::RED,
+                                    _ => text_color,
+                                };
+                                ui.label(RichText::new(&detail.status).color(status_color));
+                                ui.end_row();
+                            }
+                            drop(image_details);
+                        });
                     });
                 });
             });
@@ -164,7 +179,6 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
 
         ui.add_space(20.0);
 
-        // Conversion Log with Progress Bar
         // Conversion Log with Progress Bar
         ui.group(|ui| {
             ui.set_min_width(ui.available_width());
@@ -182,7 +196,11 @@ pub fn render(app: &mut App, ctx: &egui::Context) {
                 .show(ui, |ui| {
                 let logs = app.log_messages.lock();
                 for log in logs.iter() {
-                    ui.label(log);
+                    if log.contains("error") || log.contains("failed") {
+                        ui.label(RichText::new(log).color(Color32::RED));
+                    } else {
+                        ui.label(log);
+                    }
                 }
             });
         });   
